@@ -1,0 +1,30 @@
+# Keil MDK-ARM
+*.uvguix.*
+*.uvoptx
+*.lst
+*.crf
+*.d
+*.o
+*.axf
+*.hex
+*.bin
+*.htm
+*.build_log.htm
+*.lnp
+*.sct
+*.dep
+JLinkLog.txt
+JLinkSettings.ini
+*.iex
+
+# STM32CubeIDE
+Debug/
+.settings/
+.project
+.cproject
+
+# Misc
+*.swp
+*.swo
+*~
+.DS_Store

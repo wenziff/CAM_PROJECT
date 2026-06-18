@@ -19,9 +19,9 @@
 /* Includes ------------------------------------------------------------------*/
 #include "ov5640.h"
 #include "main.h"
-#include "i2c.h"      // Ê¹ÓÃ hi2c2
-#include "gpio.h"     // Ê¹ÓÃ PC4 ²Ù×÷ºê
-/* ¾²Ì¬º¯ÊýÉùÃ÷ */
+#include "i2c.h"      // ä½¿ç”¨ hi2c2
+#include "gpio.h"     // ä½¿ç”¨ PC4 æ“ä½œå®
+/* é™æ€å‡½æ•°å£°æ˜Ž */
 static int32_t OV5640_IO_Init(void);
 static int32_t OV5640_IO_DeInit(void);
 static int32_t OV5640_IO_WriteReg(uint16_t addr, uint16_t reg, uint8_t *pData, uint16_t Length);
@@ -29,19 +29,19 @@ static int32_t OV5640_IO_ReadReg(uint16_t addr, uint16_t reg, uint8_t *pData, ui
 static int32_t OV5640_IO_GetTick(void);
 static int32_t OV5640_IO_Init(void)
 {
-    /* I2C ÒÑÔÚ MX_I2C2_Init() ÖÐ³õÊ¼»¯£¬ÕâÀïÎÞÐèÖØ¸´ */
+    /* I2C å·²åœ¨ MX_I2C2_Init() ä¸­åˆå§‹åŒ–ï¼Œè¿™é‡Œæ— éœ€é‡å¤ */
     return OV5640_OK;
 }
 
 static int32_t OV5640_IO_DeInit(void)
 {
-    /* ¿ÉÑ¡µÄ¹Ø±Õ²Ù×÷£¬ÔÝ²»´¦Àí */
+    /* å¯é€‰çš„å…³é—­æ“ä½œï¼Œæš‚ä¸å¤„ç† */
     return OV5640_OK;
 }
 
 static int32_t OV5640_IO_WriteReg(uint16_t addr, uint16_t reg, uint8_t *pData, uint16_t Length)
 {
-    /* Ê¹ÓÃ HAL I2C Ð´£¬×¢ÒâµØÖ·ÊÇ 7 Î»£¬¼Ä´æÆ÷ 16 Î» */
+    /* ä½¿ç”¨ HAL I2C å†™ï¼Œæ³¨æ„åœ°å€æ˜¯ 7 ä½ï¼Œå¯„å­˜å™¨ 16 ä½ */
     HAL_StatusTypeDef status = HAL_I2C_Mem_Write(&hi2c2, addr, reg, I2C_MEMADD_SIZE_16BIT, pData, Length, 100);
     return (status == HAL_OK) ? OV5640_OK : OV5640_ERROR;
 }
@@ -436,12 +436,12 @@ int32_t OV5640_Init(OV5640_Object_t *pObj, uint32_t Resolution, uint32_t PixelFo
       {
         pObj->IO.Init      = OV5640_IO_Init;
         pObj->IO.DeInit    = OV5640_IO_DeInit;
-        pObj->IO.Address   = OV5640_I2C_ADDR; // Ðè¶¨ÒåÎª 0x3C
+        pObj->IO.Address   = OV5640_I2C_ADDR; // éœ€å®šä¹‰ä¸º 0x3C
         pObj->IO.WriteReg  = OV5640_IO_WriteReg;
         pObj->IO.ReadReg   = OV5640_IO_ReadReg;
         pObj->IO.GetTick   = OV5640_IO_GetTick;
     }
-       /* Ó²¼þ¸´Î» */
+       /* ç¡¬ä»¶å¤ä½ */
     OV5640_HardReset();
 
   if (pObj->IsInitialized == 0U)

@@ -100,11 +100,11 @@ int main(void)
   MX_I2C1_Init();
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
-/* ³õÊ¼»¯ÉãÏñÍ·£¨QVGA 320x240£¬RGB565£© */
+/* åˆå§‹åŒ–æ‘„åƒå¤´ï¼ˆQVGA 320x240ï¼ŒRGB565ï¼‰ */
 if (OV5640_Init(&ov5640_obj, OV5640_R320x240, OV5640_RGB565) != OV5640_OK) {
     Error_Handler();
 }
-/* Æô¶¯ÊÓÆµÊä³ö */
+/* å¯åŠ¨è§†é¢‘è¾“å‡º */
 OV5640_Start(&ov5640_obj);
   /* USER CODE END 2 */
 

@@ -10,6 +10,7 @@
       <TargetName>CAM1.0</TargetName>
       <ToolsetNumber>0x4</ToolsetNumber>
       <ToolsetName>ARM-ADS</ToolsetName>
+      <pCCUsed>5060960::V5.06 update 7 (build 960)::.\ARMCC</pCCUsed>
       <uAC6>0</uAC6>
       <TargetOption>
         <TargetCommonOption>
@@ -305,7 +306,7 @@
               <OCR_RVCT10>
                 <Type>0</Type>
                 <StartAddress>0x24000000</StartAddress>
-                <Size>0x80000</Size>
+                <Size>0x40000</Size>
               </OCR_RVCT10>
             </OnChipMemories>
             <RvctStartVector></RvctStartVector>
@@ -338,7 +339,7 @@
               <MiscControls></MiscControls>
               <Define>USE_PWR_LDO_SUPPLY,USE_HAL_DRIVER,STM32H750xx</Define>
               <Undefine></Undefine>
-              <IncludePath>../Core/Inc;../Drivers/STM32H7xx_HAL_Driver/Inc;../Drivers/STM32H7xx_HAL_Driver/Inc/Legacy;../Drivers/CMSIS/Device/ST/STM32H7xx/Include;../Drivers/CMSIS/Include</IncludePath>
+              <IncludePath>../Core/Inc;../Drivers/STM32H7xx_HAL_Driver/Inc;../Drivers/STM32H7xx_HAL_Driver/Inc/Legacy;../Drivers/CMSIS/Device/ST/STM32H7xx/Include;../Drivers/CMSIS/Include;../Drivers/Device;../Drivers/Device/mlx90640</IncludePath>
             </VariousControls>
           </Cads>
           <Aads>
@@ -443,9 +444,44 @@
               <FilePath>..\Core\Src\lcd.c</FilePath>
             </File>
             <File>
-              <FileName>ov5640.c</FileName>
+              <FileName>spi.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\Core\Src\ov5640.c</FilePath>
+              <FilePath>..\Core\Src\spi.c</FilePath>
+            </File>
+            <File>
+              <FileName>font.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Core\Src\font.c</FilePath>
+            </File>
+            <File>
+              <FileName>ov2640.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Core\Src\ov2640.c</FilePath>
+            </File>
+            <File>
+              <FileName>ov2640_cfg.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Core\Src\ov2640_cfg.c</FilePath>
+            </File>
+            <File>
+              <FileName>motor.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Core\Src\motor.c</FilePath>
+            </File>
+            <File>
+              <FileName>tim.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Core\Src\tim.c</FilePath>
+            </File>
+            <File>
+              <FileName>sccb.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Core\Src\sccb.c</FilePath>
+            </File>
+            <File>
+              <FileName>thermal_stream.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../Core/Src/thermal_stream.c</FilePath>
             </File>
           </Files>
         </Group>
@@ -486,6 +522,26 @@
               <FileName>stm32h7xx_hal_gpio.c</FileName>
               <FileType>1</FileType>
               <FilePath>../Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_gpio.c</FilePath>
+            </File>
+            <File>
+              <FileName>stm32h7xx_hal_spi.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_spi.c</FilePath>
+            </File>
+            <File>
+              <FileName>stm32h7xx_hal_spi_ex.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_spi_ex.c</FilePath>
+            </File>
+            <File>
+              <FileName>stm32h7xx_hal_tim.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_tim.c</FilePath>
+            </File>
+            <File>
+              <FileName>stm32h7xx_hal_tim_ex.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_tim_ex.c</FilePath>
             </File>
             <File>
               <FileName>stm32h7xx_hal_hsem.c</FileName>
@@ -561,6 +617,31 @@
               <FileName>system_stm32h7xx.c</FileName>
               <FileType>1</FileType>
               <FilePath>../Core/Src/system_stm32h7xx.c</FilePath>
+            </File>
+          </Files>
+        </Group>
+        <Group>
+          <GroupName>Drivers/Device</GroupName>
+          <Files>
+            <File>
+              <FileName>st7789_driver.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../Drivers/Device/st7789_driver.c</FilePath>
+            </File>
+            <File>
+              <FileName>st7789_middle.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../Drivers/Device/st7789_middle.c</FilePath>
+            </File>
+            <File>
+              <FileName>MLX90640_API.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../Drivers/Device/mlx90640/MLX90640_API.c</FilePath>
+            </File>
+            <File>
+              <FileName>MLX90640_I2C_Driver.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../Drivers/Device/mlx90640/MLX90640_I2C_Driver.c</FilePath>
             </File>
           </Files>
         </Group>

@@ -59,6 +59,8 @@ void Error_Handler(void);
 /* Private defines -----------------------------------------------------------*/
 #define BTN_CAPTURE_Pin GPIO_PIN_0
 #define BTN_CAPTURE_GPIO_Port GPIOA
+#define BTN_THERMAL_Pin GPIO_PIN_1
+#define BTN_THERMAL_GPIO_Port GPIOC
 #define CAM_RESET_Pin GPIO_PIN_4
 #define CAM_RESET_GPIO_Port GPIOC
 #define LCD_BL_Pin GPIO_PIN_15

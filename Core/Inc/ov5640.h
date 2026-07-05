@@ -20,7 +20,7 @@
 /* Define to prevent recursive inclusion -------------------------------------*/
 #ifndef OV5640_H
 #define OV5640_H
-#define OV5640_I2C_ADDR  0x3C
+#define OV5640_I2C_ADDR  0x78
 #ifdef __cplusplus
 extern "C" {
 #endif

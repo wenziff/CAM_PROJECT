@@ -8,7 +8,7 @@
  *
  * STM32 与 ESP32-S3 之间使用 921600、8N1 串口通信。
  * ESP32-S3 以 STA 模式连接路由器，并主动连接 PC 的 TCP 8888 端口，
- * 向 PC 转发通过 CRC 校验的完整帧。
+ * 向 PC 转发通过 CRC 校验的完整帧，并把 PC 控制命令反向转发给 STM32。
  */
 #include <WiFi.h>
 
@@ -44,6 +44,7 @@ static size_t rxLength = 0;
 static uint32_t validFrames = 0;
 static uint32_t crcErrors = 0;
 static uint32_t droppedFrames = 0;
+static uint32_t controlBytes = 0;
 static uint32_t lastStatsMs = 0;
 static uint32_t lastWiFiRetryMs = 0;
 static uint32_t lastTcpRetryMs = 0;
@@ -179,6 +180,21 @@ static void readUart() {
   }
 }
 
+// PC 下发的 STOP、CAPTURE 等短命令直接转发到 STM32 UART2_TX。
+// 图像和控制使用 TCP 全双工的两个方向，不会混入 STM32 上行二进制帧。
+static void forwardPcCommands() {
+  uint8_t commandBuffer[64];
+  while (client && client.connected() && client.available() > 0) {
+    size_t availableBytes = (size_t)client.available();
+    size_t toRead = availableBytes < sizeof(commandBuffer)
+                        ? availableBytes : sizeof(commandBuffer);
+    int received = client.read(commandBuffer, toRead);
+    if (received <= 0) return;
+    size_t written = Serial2.write(commandBuffer, (size_t)received);
+    controlBytes += written;
+  }
+}
+
 // 维护到 PC 的 TCP 连接；断开后每 2 秒主动重连一次。
 static void maintainTcpConnection() {
   if (WiFi.status() != WL_CONNECTED || client.connected()) return;
@@ -270,16 +286,18 @@ void loop() {
   // 先维护 Wi-Fi 和到 PC 的 TCP 连接，再持续接收 STM32 图像帧。
   maintainWiFi();
   maintainTcpConnection();
+  forwardPcCommands();
   readUart();
 
   // 每 2 秒输出一次统计信息，避免逐字节打印拖慢 UART。
   uint32_t now = millis();
   if (now - lastStatsMs >= 2000) {
     lastStatsMs = now;
-    Serial.printf("wifi=%s frames=%lu crc_errors=%lu dropped=%lu buffered=%u client=%s\n",
+    Serial.printf("wifi=%s frames=%lu crc_errors=%lu dropped=%lu buffered=%u controls=%lu client=%s\n",
                   WiFi.status() == WL_CONNECTED ? "yes" : "no",
                   (unsigned long)validFrames, (unsigned long)crcErrors,
                   (unsigned long)droppedFrames, (unsigned)rxLength,
+                  (unsigned long)controlBytes,
                   (client && client.connected()) ? "yes" : "no");
   }
   delay(1);

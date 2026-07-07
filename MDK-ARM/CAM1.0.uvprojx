@@ -483,6 +483,21 @@
               <FileType>1</FileType>
               <FilePath>../Core/Src/thermal_stream.c</FilePath>
             </File>
+            <File>
+              <FileName>thermal_stream.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\Core\Inc\thermal_stream.h</FilePath>
+            </File>
+            <File>
+              <FileName>firealarm_model.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Core\Src\firealarm_model.c</FilePath>
+            </File>
+            <File>
+              <FileName>firealarm_model.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\Core\Inc\firealarm_model.h</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>

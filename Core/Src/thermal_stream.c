@@ -1,4 +1,4 @@
-﻿#include "thermal_stream.h"
+#include "thermal_stream.h"
 
 #include <math.h>
 #include <string.h>
@@ -35,6 +35,7 @@ static uint32_t photo_sequence;
 static int mlx_mode = 1;
 static uint8_t poll_subpage_mask;
 static uint8_t snapshot_requested;
+static uint8_t latest_frame_valid;
 
 static void put_u16_le(uint8_t *dst, uint16_t value)
 {
@@ -119,6 +120,7 @@ static int acquire_temperature_frame(void)
                                  mlx_mode, &mlx_params);
     MLX90640_BadPixelsCorrection(mlx_params.outlierPixels, temperatures,
                                  mlx_mode, &mlx_params);
+    latest_frame_valid = 1U;
     return THERMAL_STREAM_OK;
 }
 
@@ -221,6 +223,7 @@ int thermal_stream_init(void)
     if (status != 0) return status;
     mlx_mode = MLX90640_GetCurMode(MLX90640_ADDRESS);
     poll_subpage_mask = 0U;
+    latest_frame_valid = 0U;
     return mlx_mode < 0 ? mlx_mode : THERMAL_STREAM_OK;
 }
 
@@ -262,7 +265,18 @@ int thermal_stream_poll_and_send(void)
                                  mlx_mode, &mlx_params);
     MLX90640_BadPixelsCorrection(mlx_params.outlierPixels, temperatures,
                                  mlx_mode, &mlx_params);
+    latest_frame_valid = 1U;
     return transmit_temperature_frame();
+}
+
+const float *thermal_stream_get_latest_temperatures(void)
+{
+    return latest_frame_valid != 0U ? temperatures : (const float *)0;
+}
+
+uint8_t thermal_stream_has_valid_frame(void)
+{
+    return latest_frame_valid;
 }
 
 void thermal_stream_request_snapshot(void)

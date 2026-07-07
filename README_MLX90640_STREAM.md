@@ -108,3 +108,21 @@ python pc_receiver\mlx90640_viewer.py
 ```
 - 帧缓冲使用 AXI SRAM 预留区 `0x24040000`；采集完成后再通过 SPI1 整帧刷屏，避免画面撕裂。
 - MLX90640 改为非阻塞子页轮询，因此 OV2640 本地显示与 STM32→ESP32→PC 热成像传输可以同时运行。
+
+## 7. PC 火情监控界面与停车控制
+
+- 图形界面同时显示可见光、红外热力图和双光融合图，三路图像可用界面复选按钮分别隐藏或显示。
+- 热力图按传感器安装方向统一逆时针旋转 90°；火情位置和融合图使用旋转后的坐标。
+- 界面顶部包含火情状态、火情位置和 LED 指示灯；检测到火情时 LED 变红并循环播放 `pc_receiver/the_sound_of_fire_alarm.mp3`，可用“警报消音”按钮停止声音。
+- PC 通过 TCP 向 ESP32-S3 发送 `STOP` 和 `CAPTURE`，ESP32-S3 经 UART2_TX 转发给 STM32；STM32 停止双路电机 PWM，并上传当前可见光帧。
+- 火情发生后界面锁定触发时刻的热图，并在当前可见光抓拍到达后生成融合图。
+- 当前仓库没有训练模型及权重，`FireDetector.detect()` 暂用最高温阈值作为可运行的联调检测器。默认阈值为 60 ℃，可用 `--fire-threshold` 修改；接入真实双光模型时替换该方法即可。
+
+示例：
+
+```powershell
+python pc_receiver\mlx90640_viewer.py --fire-threshold 60
+```
+
+如只调试画面而不播放声音，可增加 `--no-alarm`。
+也可通过 `--alarm-sound 其他音效.mp3` 临时指定另一段警报音效。

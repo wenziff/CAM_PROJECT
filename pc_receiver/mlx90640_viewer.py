@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""接收并显示 MLX90640 热图，同时接收、保存 OV2640 按键照片。"""
+"""接收并显示 STM32H7 识别火情后发送的可见光、热图和融合图。"""
 from __future__ import annotations
 
 import argparse
@@ -25,7 +25,8 @@ MAX_PAYLOAD_SIZE = 4096
 PHOTO_WIDTH = 240
 PHOTO_HEIGHT = 240
 PHOTO_RGB565_SIZE = PHOTO_WIDTH * PHOTO_HEIGHT * 2
-# 0x01 是实时温度图，0x02 是照片分片，0x03 是 KEY2 热图快照。
+# 0x01 是实时温度图，0x02 是照片分片，0x03 是 STM32 火情热图快照。
+# PC 以 0x03 作为“STM32 已识别到 fire”的事件标志，不再进行二次识别。
 TEMPERATURE_FRAME = 0x01
 PHOTO_CHUNK_FRAME = 0x02
 THERMAL_SNAPSHOT_FRAME = 0x03
@@ -151,6 +152,8 @@ class Receiver(threading.Thread):
         self.stop_event = threading.Event()
         self.lock = threading.Lock()
         self.latest: Frame | None = None
+        self.latest_fire_snapshot: Frame | None = None
+        self.fire_event_count = 0
         self.connection_state = "starting"
         self.parser = FrameParser()
         self.frames_received = 0
@@ -179,6 +182,11 @@ class Receiver(threading.Thread):
         """线程安全地获取最近一次完整的 OV2640 照片。"""
         with self.lock:
             return self.latest_photo, self.latest_photo_sequence
+
+    def fire_snapshot(self) -> tuple[Frame | None, int]:
+        """获取最近一次 STM32 火情快照及单调递增的事件编号。"""
+        with self.lock:
+            return self.latest_fire_snapshot, self.fire_event_count
 
     def _set_state(self, state: str) -> None:
         """更新供主线程或图形界面读取的连接状态。"""
@@ -210,13 +218,16 @@ class Receiver(threading.Thread):
         self.frames_received += 1
         with self.lock:
             self.latest = frame
+            if frame.frame_type == THERMAL_SNAPSHOT_FRAME:
+                self.latest_fire_snapshot = frame
+                self.fire_event_count += 1
         if frame.frame_type == THERMAL_SNAPSHOT_FRAME:
             self.thermal_snapshots_saved += 1
             local_index = self.thermal_snapshots_saved
             image = temperatures_from_frame(frame, self.thermal_flip_x)
             save_frame(self.thermal_dir, image, index=local_index)
             print(
-                f"KEY2 thermal snapshot saved: "
+                f"STM32 fire thermal snapshot saved: "
                 f"{self.thermal_dir / f'mlx90640_{local_index:06d}.png'}"
             )
 
@@ -313,11 +324,135 @@ class Receiver(threading.Thread):
 
 
 def temperatures_from_frame(frame: Frame, flip_x: bool) -> np.ndarray:
-    """将小端 int16（单位 0.01°C）转换为 24×32 摄氏温度矩阵。"""
+    """转换温度矩阵，并按传感器安装方向逆时针旋转 90°。"""
     raw = np.frombuffer(frame.payload, dtype="<i2").astype(np.float32)
     raw[raw == INVALID_TEMPERATURE] = np.nan
     image = raw.reshape((frame.height, frame.width)) / 100.0
-    return np.fliplr(image) if flip_x else image
+    if flip_x:
+        image = np.fliplr(image)
+    return np.rot90(image, 1)
+
+
+def describe_fire_location(row: int, column: int,
+                           height: int, width: int) -> str:
+    """把热图像素坐标转换为便于现场查看的九宫格位置。"""
+    horizontal = ("左侧" if column < width / 3 else
+                  "右侧" if column >= width * 2 / 3 else "中央")
+    vertical = ("上方" if row < height / 3 else
+                "下方" if row >= height * 2 / 3 else "中部")
+    if horizontal == "中央" and vertical == "中部":
+        area = "画面中央"
+    else:
+        area = vertical + horizontal
+    return f"{area}（x={column}, y={row}）"
+
+
+def resize_nearest(image: np.ndarray, height: int, width: int) -> np.ndarray:
+    """只依赖 NumPy 的最近邻缩放，用于把 32×24 热图映射到照片尺寸。"""
+    source_height, source_width = image.shape[:2]
+    y_indices = np.linspace(0, source_height - 1, height).astype(np.intp)
+    x_indices = np.linspace(0, source_width - 1, width).astype(np.intp)
+    return image[y_indices[:, None], x_indices[None, :]]
+
+
+def build_fusion_image(visible: np.ndarray | None,
+                       thermal: np.ndarray) -> np.ndarray:
+    """生成可见光与伪彩热图的透明叠加图。"""
+    from matplotlib import colormaps
+
+    if visible is None:
+        visible_image = np.zeros((PHOTO_HEIGHT, PHOTO_WIDTH, 3), dtype=np.uint8)
+    else:
+        visible_image = visible.astype(np.uint8, copy=False)
+    resized = resize_nearest(
+        thermal, visible_image.shape[0], visible_image.shape[1]
+    )
+    valid = resized[np.isfinite(resized)]
+    if valid.size == 0:
+        return visible_image.copy()
+    low = float(np.percentile(valid, 5.0))
+    high = float(np.percentile(valid, 99.0))
+    if high - low < 1.0:
+        high = low + 1.0
+    normalized = np.nan_to_num((resized - low) / (high - low), nan=0.0)
+    thermal_rgb = colormaps["inferno"](
+        np.clip(normalized, 0.0, 1.0)
+    )[:, :, :3]
+    fused = 0.58 * (visible_image.astype(np.float32) / 255.0) + 0.42 * thermal_rgb
+    return np.clip(fused * 255.0, 0, 255).astype(np.uint8)
+
+
+class AlarmController:
+    """使用 Windows MCI 循环播放 MP3，避免阻塞 Matplotlib 界面线程。"""
+
+    def __init__(self, sound_path: Path, enabled: bool = True) -> None:
+        self.sound_path = sound_path
+        self.enabled = enabled
+        self.active = threading.Event()
+        self.closed = threading.Event()
+        self.worker = threading.Thread(target=self._run, daemon=True)
+        self.worker.start()
+
+    def start(self) -> None:
+        if self.enabled:
+            self.active.set()
+
+    def silence(self) -> None:
+        self.active.clear()
+
+    def close(self) -> None:
+        self.active.clear()
+        self.closed.set()
+        self.worker.join(timeout=1.0)
+
+    def _run(self) -> None:
+        if self.enabled and self.sound_path.is_file():
+            try:
+                import ctypes
+                mci = ctypes.windll.winmm.mciSendStringW
+                alias = f"fire_alarm_{id(self)}"
+                path = str(self.sound_path.resolve()).replace('"', '')
+                if mci(f'open "{path}" type mpegvideo alias {alias}',
+                       None, 0, None) == 0:
+                    self._run_mci(mci, alias)
+                    return
+                print(f"Unable to open alarm MP3: {self.sound_path}")
+            except (AttributeError, OSError) as error:
+                print(f"Unable to use Windows MP3 alarm: {error}")
+        self._run_fallback_beep()
+
+    def _run_mci(self, mci, alias: str) -> None:
+        playing = False
+        try:
+            while not self.closed.is_set():
+                requested = self.active.is_set()
+                if requested and not playing:
+                    mci(f"seek {alias} to start", None, 0, None)
+                    playing = mci(f"play {alias} repeat", None, 0, None) == 0
+                elif not requested and playing:
+                    mci(f"stop {alias}", None, 0, None)
+                    playing = False
+                self.closed.wait(0.1)
+        finally:
+            mci(f"stop {alias}", None, 0, None)
+            mci(f"close {alias}", None, 0, None)
+
+    def _run_fallback_beep(self) -> None:
+        try:
+            import winsound
+        except ImportError:
+            winsound = None
+        while not self.closed.is_set():
+            if not self.active.wait(0.1):
+                continue
+            if winsound is not None:
+                try:
+                    winsound.Beep(1800, 260)
+                except RuntimeError:
+                    self.closed.wait(0.3)
+            else:
+                print("\a", end="", flush=True)
+                self.closed.wait(0.5)
 
 
 def rgb565_to_rgb(payload: bytes, width: int, height: int) -> np.ndarray:
@@ -426,40 +561,154 @@ def run_headless(receiver: Receiver, args: argparse.Namespace) -> None:
 
 
 def run_gui(receiver: Receiver, args: argparse.Namespace) -> None:
-    """使用 Matplotlib 显示实时热力图。"""
+    """显示三路图像；火情判定和电机控制全部由 STM32H7 完成。"""
     import matplotlib.pyplot as plt
     from matplotlib.animation import FuncAnimation
+    from matplotlib.patches import Circle
+    from matplotlib.widgets import Button, CheckButtons
 
-    figure, (axis, photo_axis) = plt.subplots(1, 2, figsize=(13, 6))
-    thermal_plot = axis.imshow(
-        np.zeros((24, 32), dtype=np.float32), cmap="inferno",
+    plt.rcParams["font.sans-serif"] = [
+        "Microsoft YaHei", "SimHei", "DejaVu Sans"
+    ]
+    plt.rcParams["axes.unicode_minus"] = False
+    alarm = AlarmController(args.alarm_sound, enabled=not args.no_alarm)
+
+    figure, (photo_axis, thermal_axis, fusion_axis) = plt.subplots(
+        1, 3, figsize=(17, 7)
+    )
+    figure.subplots_adjust(left=0.04, right=0.98, bottom=0.23, top=0.78,
+                           wspace=0.22)
+    try:
+        figure.canvas.manager.set_window_title("家庭自主式火源巡检系统")
+    except AttributeError:
+        pass
+
+    blank_photo = np.zeros((PHOTO_HEIGHT, PHOTO_WIDTH, 3), dtype=np.uint8)
+    photo_plot = photo_axis.imshow(blank_photo, interpolation="nearest")
+    photo_axis.set_title("可见光图像（等待采集）")
+    photo_axis.set_axis_off()
+    thermal_plot = thermal_axis.imshow(
+        np.zeros((32, 24), dtype=np.float32), cmap="inferno",
         interpolation="bilinear", origin="upper",
         vmin=args.min_temp if args.min_temp is not None else 20.0,
         vmax=args.max_temp if args.max_temp is not None else 40.0,
     )
-    colorbar = figure.colorbar(thermal_plot, ax=axis)
+    colorbar = figure.colorbar(thermal_plot, ax=thermal_axis, fraction=0.046,
+                               pad=0.04)
     colorbar.set_label("Temperature (C)")
-    axis.set_xlabel("MLX90640 X")
-    axis.set_ylabel("MLX90640 Y")
-    photo_plot = photo_axis.imshow(
-        np.zeros((PHOTO_HEIGHT, PHOTO_WIDTH, 3), dtype=np.uint8),
-        interpolation="nearest", origin="upper"
+    thermal_axis.set_title("红外热力图（等待数据）")
+    thermal_axis.set_xlabel("MLX90640 X")
+    thermal_axis.set_ylabel("MLX90640 Y")
+    fusion_plot = fusion_axis.imshow(blank_photo, interpolation="nearest")
+    fusion_axis.set_title("双光融合图（等待数据）")
+    fusion_axis.set_axis_off()
+
+    led = Circle((0.055, 0.91), 0.018, transform=figure.transFigure,
+                 facecolor="#555555", edgecolor="#222222", linewidth=2)
+    figure.add_artist(led)
+    fire_text = figure.text(
+        0.08, 0.91, "火情状态：未检测到火情", va="center", fontsize=13,
+        bbox={"boxstyle": "round,pad=0.45", "facecolor": "#e8f5e9",
+              "edgecolor": "#2e7d32"},
     )
-    photo_axis.set_title("OV2640 - press KEY1 to capture")
-    photo_axis.set_axis_off()
+    location_text = figure.text(
+        0.43, 0.91, "火情位置：无", va="center", fontsize=13,
+        bbox={"boxstyle": "round,pad=0.45", "facecolor": "#f5f5f5",
+              "edgecolor": "#616161"},
+    )
+    connection_text = figure.text(
+        0.08, 0.84, "通信状态：正在启动", va="center", fontsize=10,
+        color="#37474f",
+    )
+    detector_text = figure.text(
+        0.43, 0.84,
+        "火情判定：STM32H7 端模型（PC 仅接收和显示）",
+        va="center", fontsize=10, color="#6d4c41",
+    )
+
+    labels = ["可见光图像", "红外热力图", "双光融合图"]
+    display_axes = [photo_axis, thermal_axis, fusion_axis]
+    checks_axis = figure.add_axes([0.05, 0.045, 0.23, 0.13])
+    checks = CheckButtons(checks_axis, labels, [True, True, True])
+    checks_axis.set_title("图像显示开关", fontsize=10)
+    mute_axis = figure.add_axes([0.82, 0.075, 0.12, 0.06])
+    mute_button = Button(mute_axis, "警报消音", color="#eeeeee",
+                         hovercolor="#ffcdd2")
+
     last = {
         "sequence": None, "received_at": None, "fps": 0.0,
         "photo_sequence": None,
+        "fire_event_count": 0,
+        "fire_active": False, "fire_started_at": None,
+        "alarm_muted": False, "fire_photo_sequence": None,
+        "frozen_photo": None, "frozen_thermal": None,
+        "peak_temperature": float("nan"), "fire_location": "未知",
     }
 
+    def toggle_image(label: str) -> None:
+        index = labels.index(label)
+        display_axes[index].set_visible(checks.get_status()[index])
+        figure.canvas.draw_idle()
+
+    def mute_alarm(_event) -> None:
+        alarm.silence()
+        last["alarm_muted"] = True
+        mute_button.label.set_text("已消音")
+        figure.canvas.draw_idle()
+
+    checks.on_clicked(toggle_image)
+    mute_button.on_clicked(mute_alarm)
+
+    def activate_fire(thermal: np.ndarray, photo: np.ndarray | None,
+                      photo_sequence: int | None) -> None:
+        """响应 STM32 的火情快照；这里只更新界面，不发送任何命令。"""
+        valid = np.where(np.isfinite(thermal), thermal, -np.inf)
+        flat_index = int(np.argmax(valid))
+        row, column = np.unravel_index(flat_index, thermal.shape)
+        peak = float(valid[row, column])
+        last["fire_active"] = True
+        last["fire_started_at"] = time.monotonic()
+        last["frozen_thermal"] = thermal.copy()
+        last["frozen_photo"] = None if photo is None else photo.copy()
+        last["fire_photo_sequence"] = photo_sequence
+        last["peak_temperature"] = peak
+        last["fire_location"] = (
+            describe_fire_location(row, column, *thermal.shape)
+            if np.isfinite(peak) else "未知"
+        )
+        last["alarm_muted"] = False
+        mute_button.label.set_text("警报消音")
+        alarm.start()
+
+    def clear_fire() -> None:
+        last["fire_active"] = False
+        last["fire_started_at"] = None
+        last["fire_photo_sequence"] = None
+        last["frozen_photo"] = None
+        last["frozen_thermal"] = None
+        alarm.silence()
+        last["alarm_muted"] = False
+        mute_button.label.set_text("警报消音")
+
     def update(_frame_number: int):
-        """定时读取后台线程的最新帧并刷新热力图。"""
+        """读取最新数据，并按 STM32 火情事件刷新三路图像。"""
         frame, state = receiver.snapshot()
         photo, photo_sequence = receiver.photo_snapshot()
+        fire_frame, fire_event_count = receiver.fire_snapshot()
+        live_thermal = None
+
+        # 火情事件单独保存，避免 0x03 快照被紧随其后的实时帧覆盖而漏报。
+        if (fire_frame is not None
+                and fire_event_count != last["fire_event_count"]):
+            last["fire_event_count"] = fire_event_count
+            activate_fire(
+                temperatures_from_frame(fire_frame, args.flip_x),
+                photo, photo_sequence,
+            )
         if frame is None:
-            axis.set_title(f"MLX90640 - {state}")
+            thermal_axis.set_title(f"红外热力图（{state}）")
         elif frame.sequence != last["sequence"]:
-            image = temperatures_from_frame(frame, args.flip_x)
+            live_thermal = temperatures_from_frame(frame, args.flip_x)
             # 根据相邻帧到达时间计算帧率，并进行简单低通平滑。
             if last["received_at"] is not None:
                 delta = frame.received_at - last["received_at"]
@@ -470,34 +719,87 @@ def run_gui(receiver: Receiver, args: argparse.Namespace) -> None:
             last["received_at"] = frame.received_at
             last["sequence"] = frame.sequence
 
-            thermal_plot.set_data(image)
-            if args.min_temp is None or args.max_temp is None:
-                data_min = float(np.nanmin(image))
-                data_max = float(np.nanmax(image))
-                if data_max - data_min < 1.0:
-                    data_min -= 0.5
-                    data_max += 0.5
-                thermal_plot.set_clim(
-                    args.min_temp if args.min_temp is not None else data_min,
-                    args.max_temp if args.max_temp is not None else data_max,
-                )
-
-            center = image[frame.height // 2, frame.width // 2]
-            axis.set_title(
-                f"seq {frame.sequence} | {last['fps']:.1f} fps | "
-                f"min {np.nanmin(image):.2f} C | center {center:.2f} C | "
-                f"max {np.nanmax(image):.2f} C"
-            )
+            if not last["fire_active"]:
+                thermal_plot.set_data(live_thermal)
+                fusion_plot.set_data(build_fusion_image(photo, live_thermal))
             if (args.save_every > 0
                     and frame.frame_type == TEMPERATURE_FRAME
                     and frame.sequence % args.save_every == 0):
-                save_frame(args.save_dir, image, frame=frame)
+                save_frame(args.save_dir, live_thermal, frame=frame)
 
         if photo is not None and photo_sequence != last["photo_sequence"]:
-            photo_plot.set_data(photo)
-            photo_axis.set_title(f"OV2640 photo seq {photo_sequence}")
             last["photo_sequence"] = photo_sequence
-        return thermal_plot, photo_plot
+            if (last["fire_active"]
+                    and photo_sequence != last["fire_photo_sequence"]):
+                last["frozen_photo"] = photo.copy()
+                last["fire_photo_sequence"] = photo_sequence
+            elif not last["fire_active"]:
+                photo_plot.set_data(photo)
+
+        if (last["fire_active"] and last["fire_started_at"] is not None
+                and time.monotonic() - last["fire_started_at"]
+                >= args.fire_display_seconds):
+            clear_fire()
+            if frame is not None:
+                live_thermal = temperatures_from_frame(frame, args.flip_x)
+                thermal_plot.set_data(live_thermal)
+                fusion_plot.set_data(build_fusion_image(photo, live_thermal))
+            if photo is not None:
+                photo_plot.set_data(photo)
+
+        if last["fire_active"]:
+            frozen_thermal = last["frozen_thermal"]
+            frozen_photo = last["frozen_photo"]
+            if frozen_photo is not None:
+                photo_plot.set_data(frozen_photo)
+                photo_axis.set_title("可见光图像（火情抓拍）")
+            else:
+                photo_axis.set_title("可见光图像（等待火情抓拍）")
+            thermal_plot.set_data(frozen_thermal)
+            fusion_plot.set_data(build_fusion_image(frozen_photo,
+                                                     frozen_thermal))
+            thermal_axis.set_title("红外热力图（火情锁定）")
+            fusion_axis.set_title("双光融合图（火情锁定）")
+            led.set_facecolor("#f44336")
+            peak = last["peak_temperature"]
+            peak_text = f"{peak:.1f} ℃" if np.isfinite(peak) else "未知"
+            fire_text.set_text(f"火情状态：STM32 已识别到 fire  最高温 {peak_text}")
+            fire_text.get_bbox_patch().set_facecolor("#ffebee")
+            fire_text.get_bbox_patch().set_edgecolor("#c62828")
+            location_text.set_text(f"火情位置：{last['fire_location']}")
+            elapsed = time.monotonic() - last["fire_started_at"]
+            remaining = max(0.0, args.fire_display_seconds - elapsed)
+            connection_text.set_text(
+                f"通信状态：{state}；STM32 停车巡检倒计时 {remaining:.1f} 秒"
+            )
+        else:
+            led.set_facecolor("#555555")
+            fire_text.set_text("火情状态：未检测到火情")
+            fire_text.get_bbox_patch().set_facecolor("#e8f5e9")
+            fire_text.get_bbox_patch().set_edgecolor("#2e7d32")
+            location_text.set_text("火情位置：无")
+            connection_text.set_text(f"通信状态：{state}")
+            if live_thermal is not None:
+                valid = live_thermal[np.isfinite(live_thermal)]
+                if valid.size:
+                    data_min = float(np.min(valid))
+                    data_max = float(np.max(valid))
+                    if data_max - data_min < 1.0:
+                        data_min -= 0.5
+                        data_max += 0.5
+                    thermal_plot.set_clim(
+                        args.min_temp if args.min_temp is not None else data_min,
+                        args.max_temp if args.max_temp is not None else data_max,
+                    )
+                    thermal_axis.set_title(
+                        f"红外热力图 | {last['fps']:.1f} fps | "
+                        f"min {data_min:.1f} ℃ | max {data_max:.1f} ℃"
+                    )
+            if photo is not None:
+                photo_axis.set_title(f"可见光图像 seq {photo_sequence}")
+            fusion_axis.set_title("双光融合图（实时预览）")
+        return (thermal_plot, photo_plot, fusion_plot, led, fire_text,
+                location_text, connection_text, detector_text)
 
     animation = FuncAnimation(
         figure, update, interval=40, blit=False, cache_frame_data=False
@@ -516,6 +818,7 @@ def run_gui(receiver: Receiver, args: argparse.Namespace) -> None:
     except KeyboardInterrupt:
         pass
     finally:
+        alarm.close()
         receiver.stop()
 
 
@@ -536,7 +839,9 @@ def self_test() -> None:
         frames.extend(parser.feed(chunk))
     assert len(frames) == 1
     assert frames[0].sequence == 7
-    assert np.isclose(temperatures_from_frame(frames[0], False)[0, 0], 20.0)
+    rotated = temperatures_from_frame(frames[0], False)
+    assert rotated.shape == (32, 24)
+    assert np.isclose(rotated[0, 0], 20.31)
 
     # 构造一张纯红 RGB565 照片，按 STM32 相同的 4096 字节大小分片。
     photo_payload = b"\xF8\x00" * (PHOTO_RGB565_SIZE // 2)
@@ -566,11 +871,23 @@ def self_test() -> None:
         assert photo is not None and tuple(photo[0, 0]) == (255, 0, 0)
         assert (Path(temporary_directory) / "ov2640_000001.bmp").exists()
         thermal_directory = Path(temporary_directory) / "thermal"
-        # 模拟一次热图快照保存（使用本地序号 1）
-        image = temperatures_from_frame(frames[0], False)
-        save_frame(thermal_directory, image, index=1)
+        # 模拟 STM32 模型识别 fire 后发送 0x03 火情热图快照。
+        fire_frame = dataclasses.replace(
+            frames[0], frame_type=THERMAL_SNAPSHOT_FRAME
+        )
+        receiver._handle_frame(fire_frame)
+        received_fire, fire_event_count = receiver.fire_snapshot()
+        assert received_fire is fire_frame and fire_event_count == 1
+        image = temperatures_from_frame(fire_frame, False)
         assert (thermal_directory / "mlx90640_000001.npy").exists()
         assert (thermal_directory / "mlx90640_000001.png").exists()
+
+        fire_image = image.copy()
+        fire_image[4, 20] = 85.0
+        assert "右侧" in describe_fire_location(4, 20, *fire_image.shape)
+        fused = build_fusion_image(photo, fire_image)
+        assert fused.shape == (PHOTO_HEIGHT, PHOTO_WIDTH, 3)
+        assert fused.dtype == np.uint8
     print("Protocol self-test passed")
 
 
@@ -586,6 +903,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--flip-x", action="store_true")
     parser.add_argument("--min-temp", type=float)
     parser.add_argument("--max-temp", type=float)
+    parser.add_argument(
+        "--fire-display-seconds", type=float, default=10.0,
+        help="seconds to keep an STM32 fire event locked in the GUI",
+    )
+    parser.add_argument(
+        "--no-alarm", action="store_true",
+        help="disable the audible PC alarm while keeping visual alerts",
+    )
+    parser.add_argument(
+        "--alarm-sound", type=Path,
+        default=Path(__file__).resolve().parent / "the_sound_of_fire_alarm.mp3",
+        help="MP3 file played repeatedly while a fire alarm is active",
+    )
     parser.add_argument(
         "--save-dir", type=Path,
         default=Path(__file__).resolve().parent / "thermal",
@@ -604,6 +934,10 @@ def parse_args() -> argparse.Namespace:
     args = parser.parse_args()
     if args.save_every < 0:
         parser.error("--save-every must be zero or greater")
+    if args.fire_display_seconds <= 0:
+        parser.error("--fire-display-seconds must be positive")
+    if not args.no_alarm and not args.alarm_sound.is_file():
+        parser.error(f"alarm sound file not found: {args.alarm_sound}")
     return args
 
 

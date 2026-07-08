@@ -8,13 +8,11 @@
 extern "C" {
 #endif
 
+#include <stddef.h>
+
 #define INPUT_H 64
 #define INPUT_W 48
 #define INPUT_C 4
-#define CONV1_OUT_C 8
-#define CONV2_OUT_C 16
-#define CONV3_OUT_C 32
-#define FC1_OUT 16
 #define NUM_CLASSES 3
 
 #define CALIB_CROP_X 8.94624626e+00f

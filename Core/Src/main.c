@@ -10,8 +10,8 @@
 #include "firealarm_model.h"
 #include "thermal_stream.h"
 #include "usart.h"
-#include <stdio.h>
 #include <string.h>
+#include <stdio.h>
 
 /* OV2640 输出 QVGA 320×240，LCD 有效区域为 240×240。
  * DCMI 从图像左右各裁掉 40 像素后，将中央 RGB565 图像写入 AXI SRAM。
@@ -32,8 +32,12 @@
 #define CAMERA_FRAME_TIMEOUT_MS   1000U
 #define THERMAL_RETRY_INTERVAL_MS 1000U
 #define CONTROL_COMMAND_MAX       16U
+
 #define THERMAL_MIN_C             5.0f
 #define THERMAL_MAX_C             85.0f
+#define FIRE_CLASS_ID             2
+#define FIRE_STOP_DURATION_MS     10000U
+
 
 static volatile uint8_t camera_frame_ready;
 static volatile uint8_t camera_capture_error;
@@ -43,12 +47,21 @@ static uint8_t control_rx_byte;
 static char control_command[CONTROL_COMMAND_MAX];
 static uint8_t control_command_length;
 
+static uint8_t fire_alarm_active;
+static uint8_t fire_detection_armed = 1U;
+static uint32_t fire_stop_tick;
+static uint16_t patrol_speed_before_fire;
+
+
 void SystemClock_Config(void);
 static void MPU_Config(void);
 static void LCD_ShowCameraTestPattern(void);
+
 static void ShowStatusOnLCD(const char *message);
 static void ShowPredictionOnLCD(const firealarm_prediction_t *prediction);
 static void RunFirealarmInferenceAndDisplay(void);
+static void UpdateFireResponse(const firealarm_prediction_t *prediction);
+static void ServiceFireResponse(void);
 static void ServiceThermalStream(uint8_t *thermal_ready,
                                  uint32_t *thermal_retry_tick,
                                  uint32_t *thermal_last_poll_tick);
@@ -70,12 +83,13 @@ static void sample_rgb565_bilinear(const uint8_t *src,
 static void BuildFirealarmInput(const uint8_t *rgb_frame,
                                 const float *thermal_frame,
                                 float *model_input);
+
 static uint8_t CaptureButtonPressed(void);
 static uint8_t ThermalButtonPressed(void);
 static HAL_StatusTypeDef Camera_CaptureFrame(void);
 static void ProcessControlCommands(void);
 static void ExecuteControlCommand(void);
-
+                                
 static float clampf_local(float value, float low, float high)
 {
   if (value < low)
@@ -272,6 +286,7 @@ static void RunFirealarmInferenceAndDisplay(void)
   BuildFirealarmInput(CAMERA_FRAME_BUFFER, thermal_frame, model_input);
   firealarm_predict(model_input, &prediction);
   ShowPredictionOnLCD(&prediction);
+  UpdateFireResponse(&prediction);
 }
 
 static void ServiceThermalStream(uint8_t *thermal_ready,
@@ -326,21 +341,95 @@ static void ServiceThermalStream(uint8_t *thermal_ready,
 static void ShowPredictionOnLCD(const firealarm_prediction_t *prediction)
 {
   char text[32];
+  float conf_percent;
+  int integer_part;
+  int fractional_part;
 
   if (prediction == NULL)
   {
     return;
   }
 
+  /* 
+   * 将浮点数转换为百分比（0.0 ~ 100.0）
+   */
+  conf_percent = prediction->confidence * 100.0f;
+  if (conf_percent < 0.0f)
+  {
+    conf_percent = 0.0f;
+  }
+  else if (conf_percent > 100.0f)
+  {
+    conf_percent = 100.0f;
+  }
+
+  /* 
+   * 加上 0.05f 以实现保留一位小数的四舍五入
+   */
+  conf_percent += 0.05f;
+  integer_part = (int)conf_percent;
+  fractional_part = (int)(conf_percent * 10.0f) % 10;
+
+  /* 防止四舍五入后溢出 100% */
+  if (integer_part > 100)
+  {
+    integer_part = 100;
+    fractional_part = 0;
+  }
+
+  /* 
+   * 使用 %d.%d 替代 %.1f，完全规避了浮点格式化所导致的栈溢出、
+   * 8字节对齐以及 malloc 调用等底层隐患
+   */
   (void)snprintf(text,
                  sizeof(text),
-                 "%s %.1f%%",
+                 "%s %d.%d%%",
                  firealarm_class_name(prediction->class_id),
-                 (double)(prediction->confidence * 100.0f));
+                 integer_part,
+                 fractional_part);
 
-  /* 相机画面已先写入 LCD，这里只在顶部黑边显示结果，避免覆盖图像。 */
+  /* 相机画面已先写入 LCD，这里只在顶部黑边显示结果，避免覆盖图像 */
   LCD_Fill(0U, 0U, LCD_W, CAMERA_LCD_Y, BLACK);
   LCD_ShowString(20U, 20U, (const uint8_t *)text, WHITE, BLACK, 16U, 0U);
+}
+
+
+/* fire 类别只在非 fire -> fire 的边沿触发一次，避免持续火焰反复停车。 */
+static void UpdateFireResponse(const firealarm_prediction_t *prediction)
+{
+  if (prediction == NULL)
+  {
+    return;
+  }
+
+  if (prediction->class_id != FIRE_CLASS_ID)
+  {
+    fire_detection_armed = 1U;
+    return;
+  }
+
+  if ((fire_detection_armed != 0U) && (fire_alarm_active == 0U))
+  {
+    fire_detection_armed = 0U;
+    fire_alarm_active = 1U;
+    fire_stop_tick = HAL_GetTick();
+    patrol_speed_before_fire = Motor_GetSpeed();
+    Motor_Stop();
+    /* LED1 接 PE13，低电平点亮。 */
+    HAL_GPIO_WritePin(LED1_GPIO_Port, LED1_Pin, GPIO_PIN_RESET);
+  }
+}
+
+/* 非阻塞等待 10 秒，期间相机、热成像和串口仍可正常运行。 */
+static void ServiceFireResponse(void)
+{
+  if ((fire_alarm_active != 0U) &&
+      ((HAL_GetTick() - fire_stop_tick) >= FIRE_STOP_DURATION_MS))
+  {
+    fire_alarm_active = 0U;
+    HAL_GPIO_WritePin(LED1_GPIO_Port, LED1_Pin, GPIO_PIN_SET);
+    Motor_Forward(patrol_speed_before_fire);
+  }
 }
 
 static void ShowStatusOnLCD(const char *message)
@@ -353,6 +442,7 @@ static void ShowStatusOnLCD(const char *message)
   LCD_Fill(0U, 0U, LCD_W, LCD_H, BLACK);
   LCD_ShowString(20U, 140U, (const uint8_t *)message, WHITE, BLACK, 32U, 0U);
 }
+
 
 int main(void)
 {
@@ -406,21 +496,17 @@ int main(void)
 
   while (1)
   {
+    ServiceFireResponse();
     ProcessControlCommands();
     if (Camera_CaptureFrame() == HAL_OK)
     {
-      /* 采集等待期间到达的控制命令在推理前立即处理。 */
+      /* 采集等待期间到达的停车/抓拍命令在显示本帧前立即处理。 */
       ProcessControlCommands();
-
-      /* 先把相机画面显示到 LCD，再叠加推理结果。 */
-      LCD_DisplayFrame(CAMERA_LCD_X,
-                       CAMERA_LCD_Y,
-                       CAMERA_LCD_WIDTH,
-                       CAMERA_LCD_HEIGHT,
+      LCD_DisplayFrame(CAMERA_LCD_X, CAMERA_LCD_Y,
+                       CAMERA_LCD_WIDTH, CAMERA_LCD_HEIGHT,
                        CAMERA_FRAME_BUFFER);
 
-      /* 仅显示推理结果：类别 + 置信度。 */
-      RunFirealarmInferenceAndDisplay();
+      RunFirealarmInferenceAndDisplay(); ////////////ceshi
     }
 
     /* KEY2 请求保存下一张完整 MLX90640 热力图。 */
@@ -446,8 +532,6 @@ int main(void)
       if (thermal_status == THERMAL_STREAM_OK)
       {
         thermal_ready = 1U;
-        /* 热图链路就绪后，若已有相机帧，可尝试立即推理一次。 */
-        RunFirealarmInferenceAndDisplay();
       }
       else
       {
@@ -465,8 +549,43 @@ int main(void)
  */
 static void LCD_ShowCameraTestPattern(void)
 {
+  uint32_t x;
+  uint32_t y;
+  uint32_t index;
+  uint16_t color;
+
+  for (y = 0U; y < CAMERA_LCD_HEIGHT; y++)
+  {
+    for (x = 0U; x < CAMERA_LCD_WIDTH; x++)
+    {
+      if (x < (CAMERA_LCD_WIDTH / 4U))
+      {
+        color = RED;
+      }
+      else if (x < (CAMERA_LCD_WIDTH / 2U))
+      {
+        color = GREEN;
+      }
+      else if (x < ((CAMERA_LCD_WIDTH * 3U) / 4U))
+      {
+        color = BLUE;
+      }
+      else
+      {
+        color = WHITE;
+      }
+
+      index = (y * CAMERA_LCD_WIDTH + x) * CAMERA_BYTES_PER_PIXEL;
+      CAMERA_FRAME_BUFFER[index] = (uint8_t)(color >> 8);
+      CAMERA_FRAME_BUFFER[index + 1U] = (uint8_t)color;
+    }
+  }
+
   LCD_Fill(0U, 0U, LCD_W, LCD_H, BLACK);
-  LCD_ShowString(20U, 140U, (const uint8_t *)"SYSTEM INIT", WHITE, BLACK, 32U, 0U);
+  LCD_DisplayFrame(CAMERA_LCD_X, CAMERA_LCD_Y,
+                   CAMERA_LCD_WIDTH, CAMERA_LCD_HEIGHT,
+                   CAMERA_FRAME_BUFFER);
+  HAL_Delay(1000U);
 }
 
 /* KEY1 接 PA0，按下时接地；消抖并确保长按只拍摄一次。 */
@@ -544,6 +663,10 @@ static void ProcessControlCommands(void)
   if (remote_stop_requested != 0U)
   {
     remote_stop_requested = 0U;
+    if (fire_alarm_active != 0U)
+    {
+      patrol_speed_before_fire = 0U;
+    }
     Motor_Stop();
   }
 }
@@ -612,8 +735,6 @@ static HAL_StatusTypeDef Camera_CaptureFrame(void)
     }
   }
 
-  /* Snapshot 成功后显式停止 DCMI，避免下一帧 Start_DMA 被忙状态卡住。 */
-  (void)HAL_DCMI_Stop(&hdcmi);
   return camera_capture_error == 0U ? HAL_OK : HAL_ERROR;
 }
 

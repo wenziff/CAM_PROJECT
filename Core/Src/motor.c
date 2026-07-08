@@ -21,3 +21,8 @@ void Motor_Stop(void)
   __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_3, 0);
   __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_4, 0);
 }
+
+uint16_t Motor_GetSpeed(void)
+{
+  return (uint16_t)__HAL_TIM_GET_COMPARE(&htim4, TIM_CHANNEL_3);
+}

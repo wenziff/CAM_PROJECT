@@ -13,7 +13,7 @@
 #include <WiFi.h>
 
 // STA 模式使用的路由器信息，请按现场 Wi-Fi 修改这两项。
-static const char *WIFI_SSID = "YOUR_WIFI_SSID";
+static const char *WIFI_SSID = "";
 static const char *WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
 static const char *DEVICE_HOSTNAME = "mlx90640-cam";
 static const char *PC_IP = "10.211.44.196";

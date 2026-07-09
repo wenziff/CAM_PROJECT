@@ -146,8 +146,8 @@ void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(LCD_RST_GPIO_Port, &GPIO_InitStruct);
-
-  GPIO_InitStruct.Pin = GPIO_PIN_3;
+  /* WR-GS1/WR-GS2 循迹灰度传感器：PA3/PA2，模块输出端默认上拉。 */
+  GPIO_InitStruct.Pin = LINE_LEFT_Pin|LINE_RIGHT_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);

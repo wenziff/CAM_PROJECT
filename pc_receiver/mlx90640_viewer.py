@@ -641,7 +641,7 @@ def run_gui(receiver: Receiver, args: argparse.Namespace) -> None:
         "fire_event_count": 0,
         "fire_active": False, "fire_started_at": None,
         "alarm_muted": False, "fire_photo_sequence": None,
-        "frozen_photo": None, "frozen_thermal": None,
+        "latest_photo": None, "frozen_thermal": None,
         "peak_temperature": float("nan"), "fire_location": "未知",
     }
 
@@ -669,7 +669,7 @@ def run_gui(receiver: Receiver, args: argparse.Namespace) -> None:
         last["fire_active"] = True
         last["fire_started_at"] = time.monotonic()
         last["frozen_thermal"] = thermal.copy()
-        last["frozen_photo"] = None if photo is None else photo.copy()
+        last["latest_photo"] = None if photo is None else photo.copy()
         last["fire_photo_sequence"] = photo_sequence
         last["peak_temperature"] = peak
         last["fire_location"] = (
@@ -684,8 +684,8 @@ def run_gui(receiver: Receiver, args: argparse.Namespace) -> None:
         last["fire_active"] = False
         last["fire_started_at"] = None
         last["fire_photo_sequence"] = None
-        last["frozen_photo"] = None
         last["frozen_thermal"] = None
+        last["latest_photo"] = None
         alarm.silence()
         last["alarm_muted"] = False
         mute_button.label.set_text("警报消音")
@@ -729,12 +729,9 @@ def run_gui(receiver: Receiver, args: argparse.Namespace) -> None:
 
         if photo is not None and photo_sequence != last["photo_sequence"]:
             last["photo_sequence"] = photo_sequence
-            if (last["fire_active"]
-                    and photo_sequence != last["fire_photo_sequence"]):
-                last["frozen_photo"] = photo.copy()
-                last["fire_photo_sequence"] = photo_sequence
-            elif not last["fire_active"]:
-                photo_plot.set_data(photo)
+            last["latest_photo"] = photo.copy()
+            last["fire_photo_sequence"] = photo_sequence
+            photo_plot.set_data(photo)
 
         if (last["fire_active"] and last["fire_started_at"] is not None
                 and time.monotonic() - last["fire_started_at"]
@@ -749,18 +746,19 @@ def run_gui(receiver: Receiver, args: argparse.Namespace) -> None:
 
         if last["fire_active"]:
             frozen_thermal = last["frozen_thermal"]
-            frozen_photo = last["frozen_photo"]
-            if frozen_photo is not None:
-                photo_plot.set_data(frozen_photo)
-                photo_axis.set_title("可见光图像（火情抓拍）")
+            live_photo = photo if photo is not None else last["latest_photo"]
+            if live_photo is not None:
+                photo_plot.set_data(live_photo)
+                photo_axis.set_title(f"可见光图像（实时显示｜fire 报警｜seq {photo_sequence}）")
             else:
-                photo_axis.set_title("可见光图像（等待火情抓拍）")
+                photo_axis.set_title("可见光图像（实时显示｜等待图像）")
             thermal_plot.set_data(frozen_thermal)
-            fusion_plot.set_data(build_fusion_image(frozen_photo,
+            fusion_plot.set_data(build_fusion_image(live_photo,
                                                      frozen_thermal))
             thermal_axis.set_title("红外热力图（火情锁定）")
             fusion_axis.set_title("双光融合图（火情锁定）")
             led.set_facecolor("#f44336")
+            led.set_edgecolor("#ffeb3b")
             peak = last["peak_temperature"]
             peak_text = f"{peak:.1f} ℃" if np.isfinite(peak) else "未知"
             fire_text.set_text(f"火情状态：STM32 已识别到 fire  最高温 {peak_text}")
@@ -774,6 +772,7 @@ def run_gui(receiver: Receiver, args: argparse.Namespace) -> None:
             )
         else:
             led.set_facecolor("#555555")
+            led.set_edgecolor("#222222")
             fire_text.set_text("火情状态：未检测到火情")
             fire_text.get_bbox_patch().set_facecolor("#e8f5e9")
             fire_text.get_bbox_patch().set_edgecolor("#2e7d32")

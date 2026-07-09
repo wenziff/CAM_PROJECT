@@ -36,7 +36,10 @@
 #define THERMAL_MIN_C             5.0f
 #define THERMAL_MAX_C             85.0f
 #define FIRE_CLASS_ID             2
-#define FIRE_STOP_DURATION_MS     10000U
+#define FIRE_STOP_DURATION_MS     5000U
+#define LINE_TRACK_BASE_SPEED     500U
+#define LINE_TRACK_TURN_SPEED     100U
+#define LINE_TRACK_INTERVAL_MS    10U
 
 
 static volatile uint8_t camera_frame_ready;
@@ -51,6 +54,7 @@ static uint8_t fire_alarm_active;
 static uint8_t fire_detection_armed = 1U;
 static uint32_t fire_stop_tick;
 static uint16_t patrol_speed_before_fire;
+static uint32_t line_track_last_tick;
 
 
 void SystemClock_Config(void);
@@ -62,6 +66,7 @@ static void ShowPredictionOnLCD(const firealarm_prediction_t *prediction);
 static void RunFirealarmInferenceAndDisplay(void);
 static void UpdateFireResponse(const firealarm_prediction_t *prediction);
 static void ServiceFireResponse(void);
+static void ServiceLineTracking(void);
 static void ServiceThermalStream(uint8_t *thermal_ready,
                                  uint32_t *thermal_retry_tick,
                                  uint32_t *thermal_last_poll_tick);
@@ -410,6 +415,8 @@ static void UpdateFireResponse(const firealarm_prediction_t *prediction)
 
   if ((fire_detection_armed != 0U) && (fire_alarm_active == 0U))
   {
+    int photo_status;
+
     fire_detection_armed = 0U;
     fire_alarm_active = 1U;
     fire_stop_tick = HAL_GetTick();
@@ -417,6 +424,18 @@ static void UpdateFireResponse(const firealarm_prediction_t *prediction)
     Motor_Stop();
     /* LED1 接 PE13，低电平点亮。 */
     HAL_GPIO_WritePin(LED1_GPIO_Port, LED1_Pin, GPIO_PIN_RESET);
+
+    /* STM32 识别到 fire 后，只在此处上传一次当前可见光图像到 PC。 */
+    photo_status = thermal_stream_send_photo_rgb565(CAMERA_FRAME_BUFFER,
+                                                    CAMERA_LCD_WIDTH,
+                                                    CAMERA_LCD_HEIGHT);
+    if (photo_status != THERMAL_STREAM_OK)
+    {
+      (void)thermal_stream_send_status(photo_status);
+    }
+
+    /* 同步标记下一帧热图为 fire 快照，PC 端据此点亮报警灯并播放警报音。 */
+    thermal_stream_request_snapshot();
   }
 }
 
@@ -429,6 +448,49 @@ static void ServiceFireResponse(void)
     fire_alarm_active = 0U;
     HAL_GPIO_WritePin(LED1_GPIO_Port, LED1_Pin, GPIO_PIN_SET);
     Motor_Forward(patrol_speed_before_fire);
+  }
+}
+
+/*
+ * WR-GS1/WR-GS2 灰度循迹传感器：白纸输出 1，黑色输出 0。
+ * 该函数不使用 HAL_Delay，只快速读取 GPIO 并更新 PWM，避免拖慢摄像头采集和图像推理。
+ */
+static void ServiceLineTracking(void)
+{
+  uint8_t left_is_white;
+  uint8_t right_is_white;
+  uint32_t now = HAL_GetTick();
+
+  if (fire_alarm_active != 0U)
+  {
+    return;
+  }
+
+  if ((now - line_track_last_tick) < LINE_TRACK_INTERVAL_MS)
+  {
+    return;
+  }
+  line_track_last_tick = now;
+
+  left_is_white = (HAL_GPIO_ReadPin(LINE_LEFT_GPIO_Port,
+                                    LINE_LEFT_Pin) == GPIO_PIN_SET) ? 1U : 0U;
+  right_is_white = (HAL_GPIO_ReadPin(LINE_RIGHT_GPIO_Port,
+                                     LINE_RIGHT_Pin) == GPIO_PIN_SET) ? 1U : 0U;
+
+  if ((left_is_white == 0U) && (right_is_white != 0U))
+  {
+    /* 左侧压到黑线，左轮降速、右轮保持巡检速度，小车向左修正。 */
+    Motor_SetLeftRight(LINE_TRACK_TURN_SPEED, LINE_TRACK_BASE_SPEED);
+  }
+  else if ((left_is_white != 0U) && (right_is_white == 0U))
+  {
+    /* 右侧压到黑线，右轮降速、左轮保持巡检速度，小车向右修正。 */
+    Motor_SetLeftRight(LINE_TRACK_BASE_SPEED, LINE_TRACK_TURN_SPEED);
+  }
+  else
+  {
+    /* 两侧同为白纸或同为黑色时保持直行，避免在路口/短暂丢线时停顿。 */
+    Motor_Forward(LINE_TRACK_BASE_SPEED);
   }
 }
 
@@ -497,6 +559,7 @@ int main(void)
   while (1)
   {
     ServiceFireResponse();
+    ServiceLineTracking();
     ProcessControlCommands();
     if (Camera_CaptureFrame() == HAL_OK)
     {
@@ -728,6 +791,9 @@ static HAL_StatusTypeDef Camera_CaptureFrame(void)
 
   while ((camera_frame_ready == 0U) && (camera_capture_error == 0U))
   {
+    ServiceFireResponse();
+    ServiceLineTracking();
+    ProcessControlCommands();
     if ((HAL_GetTick() - start_tick) >= CAMERA_FRAME_TIMEOUT_MS)
     {
       (void)HAL_DCMI_Stop(&hdcmi);

@@ -1,6 +1,6 @@
 # MLX90640 STM32 → ESP32-S3 → PC 热成像链路
 
-本实现对应参考工程中的 **MLX90640**（32×24 热电堆阵列）。如果“MLX9640”不是笔误，请先确认传感器完整型号；当前驱动、寄存器和标定算法均针对 MLX90640。
+本实现对应参考工程中的 **MLX90640**（32×24 热电堆阵列）。
 
 ## 1. 接线
 
@@ -13,9 +13,6 @@
 | H22.4（PA10） | STM32 USART1_RX ← ESP32-S3 GPIO18（TX，可选） |
 | H22.2 | STM32 GND ↔ ESP32 GND |
 
-网表确认 OV_D3 位于 PE1（U9.98），所以 PC9 与并口摄像头没有引脚冲突；同时修正了 OV_D5=PD3。当前热成像主循环仍不启动 DCMI。
-
-网表中没有看到 MLX_SCL/MLX_SDA 的板载上拉电阻。若 H16 接的是不带上拉的裸传感器/模块，SDA、SCL 必须各加 2.2–4.7 kΩ 上拉至 3.3 V；若模块上没有上拉电阻，建议各加 2.2–4.7 kΩ。ESP32 的 TX/GPIO18 当前不参与图像上行，可不接。
 
 ## 2. 固件配置
 
@@ -31,8 +28,8 @@ ESP32-S3：
 
 - Arduino 草图：[esp32s3_bridge/esp32s3_MLX90640/esp32s3_MLX90640.ino](esp32s3_bridge/esp32s3_MLX90640/esp32s3_MLX90640.ino)
 - Wi-Fi 模式：STA；ESP32-S3 与 PC 连接同一个路由器
-- 路由器：good
-- ESP32-S3 作为 TCP 客户端，主动连接 PC 10.211.44.196:8888
+- 路由器：xxx（wifi名）
+- ESP32-S3 作为 TCP 客户端，主动连接 PC xxx（PC端地址）:8888（端口号）
 - PC 上位机作为 TCP 服务端，默认监听 0.0.0.0:8888
 - UART2：RX=GPIO17，921600 baud
 - 桥接端先校验完整帧和 CRC，再批量转发，不逐字节打印
@@ -44,15 +41,15 @@ ESP32-S3：
     cd pc_receiver
     python -m pip install -r requirements.txt
 
-先让 PC 与 ESP32-S3 连接同一个路由器，并确认 PC 的地址为 10.211.44.196。先启动 PC 接收服务，再给 ESP32-S3 上电：
+先让 PC 与 ESP32-S3 连接同一个路由器，并确认 PC 的地址为 xxx。先启动 PC 接收服务，再给 ESP32-S3 上电：
 
-Windows 防火墙需要允许 Python 接收入站 TCP 8888。10.211.44.196 必须是 ESP32 能访问的局域网地址；若它属于虚拟机/NAT 虚拟网卡，请改用桥接网络或填写 PC 的实际 Wi-Fi 地址。
+Windows 防火墙需要允许 Python 接收入站 TCP 8888。PC 的地址必须是 ESP32 能访问的局域网地址；若它属于虚拟机/NAT 虚拟网卡，请改用桥接网络或填写 PC 的实际 Wi-Fi 地址。
 
     python mlx90640_viewer.py
 
 如需只监听指定的 PC 网卡地址：
 
-    python mlx90640_viewer.py --bind 10.211.44.196
+    python mlx90640_viewer.py --bind PC的地址
 
 无界面诊断：
 
@@ -86,7 +83,7 @@ Windows 防火墙需要允许 Python 接收入站 TCP 8888。10.211.44.196 必�
 ## 5. OV2640 实时 LCD 显示
 
 - OV2640 通过 I2C2（PB10/PB11）配置为 QVGA RGB565，图像由 DCMI + DMA1 采集。
-- LCD 参数与 `D:\lww\yanjiushengdiansai\4.0` 参考工程保持一致，有效区域为 240×240。
+- LCD 参数有效区域为 240×240。
 - 摄像头输出为 320×240，DCMI 居中裁剪为 240×240，并铺满 LCD，不再保留越界边带。
 - 上电后先显示 1 秒红、绿、蓝、白彩条：彩条正常可确认 LCD 与 SPI 通道正常，随后再进入实时相机显示。
 
@@ -116,13 +113,3 @@ python pc_receiver\mlx90640_viewer.py
 - 界面顶部包含火情状态、火情位置和 LED 指示灯；检测到火情时 LED 变红并循环播放 `pc_receiver/the_sound_of_fire_alarm.mp3`，可用“警报消音”按钮停止声音。
 - PC 通过 TCP 向 ESP32-S3 发送 `STOP` 和 `CAPTURE`，ESP32-S3 经 UART2_TX 转发给 STM32；STM32 停止双路电机 PWM，并上传当前可见光帧。
 - 火情发生后界面锁定触发时刻的热图，并在当前可见光抓拍到达后生成融合图。
-- 当前仓库没有训练模型及权重，`FireDetector.detect()` 暂用最高温阈值作为可运行的联调检测器。默认阈值为 60 ℃，可用 `--fire-threshold` 修改；接入真实双光模型时替换该方法即可。
-
-示例：
-
-```powershell
-python pc_receiver\mlx90640_viewer.py --fire-threshold 60
-```
-
-如只调试画面而不播放声音，可增加 `--no-alarm`。
-也可通过 `--alarm-sound 其他音效.mp3` 临时指定另一段警报音效。
